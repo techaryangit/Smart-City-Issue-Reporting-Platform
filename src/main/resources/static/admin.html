@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Dashboard – Smart City Issue Reporting</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<header class="top"><h1>🏛️ Administration Dashboard</h1>
+  <div class="who"><span id="whoami"></span><button class="btn sec small" onclick="App.logout()">Logout</button></div></header>
+<nav class="tabs">
+  <button data-tab="dash">Dashboard</button>
+  <button data-tab="complaints">Complaints</button>
+  <button data-tab="users">Users</button>
+  <button data-tab="depts">Departments &amp; Officers</button>
+</nav>
+<main>
+<!-- ============ DASHBOARD ============ -->
+<section class="tab" id="dash">
+  <div class="stats" id="statCards"></div>
+  <div class="grid2">
+    <div class="card"><h2>Complaints by Status</h2><canvas id="statusChart" height="220"></canvas></div>
+    <div class="card"><h2>Complaints by Category</h2><canvas id="catChart" height="220"></canvas></div>
+  </div>
+  <div class="card"><h2>Reported Issues Map</h2>
+    <p class="muted">Marker colour = status (orange pending, blue in progress, green resolved, red rejected).</p>
+    <div id="bigMap" class="map" style="height:420px"></div></div>
+</section>
+
+<!-- ============ COMPLAINTS ============ -->
+<section class="tab hidden" id="complaints">
+  <div class="card"><h2>All Complaints</h2>
+    <div class="toolbar">
+      <input id="fQ" placeholder="Search ID, title or location">
+      <select id="fCat"></select><select id="fStatus"></select><select id="fPri"></select>
+      <button class="btn" id="fApply" style="flex:0 0 auto">Filter</button>
+      <button class="btn sec" id="fCsv" style="flex:0 0 auto">⬇ CSV report</button>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Category</th><th>Priority</th><th>Status</th><th>Department</th><th>Officer</th><th>Reported</th><th></th></tr></thead>
+    <tbody id="cBody"></tbody></table></div>
+    <p class="muted hidden" id="cEmpty">No complaints match the filters.</p>
+  </div>
+</section>
+
+<!-- ============ USERS ============ -->
+<section class="tab hidden" id="users">
+  <div class="card"><h2>Registered Users</h2>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Joined</th><th>Status</th><th></th></tr></thead>
+    <tbody id="uBody"></tbody></table></div></div>
+</section>
+
+<!-- ============ DEPARTMENTS ============ -->
+<section class="tab hidden" id="depts">
+  <div class="grid2">
+    <div class="card"><h2>Departments</h2>
+      <table><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody id="dBody"></tbody></table>
+      <h3>Add department</h3>
+      <label for="dName">Name</label><input id="dName" maxlength="100">
+      <label for="dDesc">Description</label><input id="dDesc" maxlength="255">
+      <p><button class="btn" id="addDept">Add department</button></p></div>
+    <div class="card"><h2>Add Field Officer</h2>
+      <label for="oName">Full name</label><input id="oName">
+      <label for="oEmail">Email</label><input id="oEmail" type="email">
+      <label for="oPass">Temporary password (min 8)</label><input id="oPass" type="password">
+      <label for="oDept">Department</label><select id="oDept"></select>
+      <p><button class="btn" id="addOfficer">Create officer account</button></p></div>
+  </div>
+</section>
+</main>
+
+<div class="modal-bg" id="modal" onclick="if(event.target===this)App.closeModal()"><div class="modal"></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/js/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let bigMap, layer, charts = {}, departments = [], complaintList = [];
+const COLORS = { PENDING: '#c77d00', IN_PROGRESS: '#2563eb', RESOLVED: '#1e8e4e', REJECTED: '#c0392b' };
+
+(async () => {
+  if (!await App.requireRole('ADMIN')) return;
+  $('fCat').innerHTML = App.options(App.CATEGORIES, 'All categories');
+  $('fStatus').innerHTML = App.options(App.STATUSES, 'All statuses');
+  $('fPri').innerHTML = App.options(App.PRIORITIES, 'All priorities');
+  departments = await App.api('/api/departments');
+  App.tabs('dash', id => {
+    if (id === 'dash') loadDash();
+    if (id === 'complaints') loadComplaints();
+    if (id === 'users') loadUsers();
+    if (id === 'depts') loadDepts();
+  });
+})();
+
+/* ---------- dashboard ---------- */
+async function loadDash() {
+  const s = await App.api('/api/admin/stats');
+  const bs = s.byStatus;
+  $('statCards').innerHTML = [['Total', s.total], ['Pending', bs.PENDING], ['In Progress', bs.IN_PROGRESS], ['Resolved', bs.RESOLVED], ['Rejected', bs.REJECTED], ['Resolution rate', s.resolutionRate + '%']]
+    .map(([l, n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  draw('statusChart', 'doughnut', Object.keys(bs).map(App.label), Object.values(bs), Object.keys(bs).map(k => COLORS[k]));
+  draw('catChart', 'bar', Object.keys(s.byCategory).map(App.label), Object.values(s.byCategory), '#1f5fbf');
+  const list = await App.api('/api/admin/complaints');
+  if (!bigMap) {
+    bigMap = L.map('bigMap').setView([28.4744, 77.5040], 12);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(bigMap);
+    layer = L.layerGroup().addTo(bigMap);
+  }
+  setTimeout(() => bigMap.invalidateSize(), 50);
+  layer.clearLayers();
+  const pts = [];
+  list.filter(c => c.latitude != null).forEach(c => {
+    L.circleMarker([c.latitude, c.longitude], { radius: 9, color: '#fff', weight: 2, fillColor: COLORS[c.status], fillOpacity: .95 })
+      .bindPopup(`<b>${App.esc(c.complaintCode)}</b><br>${App.esc(c.title)}<br>${App.label(c.category)} · ${App.label(c.status)}`).addTo(layer);
+    pts.push([c.latitude, c.longitude]);
+  });
+  if (pts.length) bigMap.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
+}
+function draw(id, type, labels, data, colors) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), { type, data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: { plugins: { legend: { display: type === 'doughnut' } }, scales: type === 'bar' ? { y: { beginAtZero: true, ticks: { precision: 0 } } } : {} } });
+}
+
+/* ---------- complaints ---------- */
+function qs() {
+  const p = new URLSearchParams();
+  if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  if ($('fCat').value) p.set('category', $('fCat').value);
+  if ($('fStatus').value) p.set('status', $('fStatus').value);
+  if ($('fPri').value) p.set('priority', $('fPri').value);
+  return p.toString();
+}
+async function loadComplaints() {
+  complaintList = await App.api('/api/admin/complaints?' + qs());
+  $('cEmpty').classList.toggle('hidden', complaintList.length > 0);
+  $('cBody').innerHTML = complaintList.map(c => `<tr><td>${App.esc(c.complaintCode)}</td><td>${App.esc(c.title)}</td><td>${App.label(c.category)}</td>
+    <td>${App.pbadge(c.priority)}</td><td>${App.badge(c.status)}</td><td>${App.esc(c.departmentName || '—')}</td><td>${App.esc(c.officerName || '—')}</td>
+    <td>${App.fmt(c.createdAt)}</td><td><button class="btn small" onclick="manage(${c.id})">Manage</button></td></tr>`).join('');
+}
+$('fApply').onclick = loadComplaints;
+$('fQ').addEventListener('keydown', e => { if (e.key === 'Enter') loadComplaints(); });
+$('fCsv').onclick = () => { location.href = '/api/admin/report.csv?' + qs(); };
+
+async function manage(id) {
+  const c = await App.api('/api/admin/complaints/' + id);
+  App.openModal(App.detailHtml(c) + `
+    <hr><h3>Assign</h3>
+    <div class="grid3">
+      <div><label for="aDept">Department</label><select id="aDept">${departments.map(d => `<option value="${d.id}" ${d.id === c.departmentId ? 'selected' : ''}>${App.esc(d.name)}</option>`).join('')}</select></div>
+      <div><label for="aOff">Field officer</label><select id="aOff"></select></div>
+      <div><label for="aPri">Priority</label><select id="aPri">${App.options(App.PRIORITIES)}</select></div>
+    </div>
+    <p><button class="btn" onclick="assign(${id})">Save assignment</button></p>
+    <h3>Update status</h3>
+    <div class="grid2">
+      <div><label for="sSel">Status</label><select id="sSel">${App.options(App.STATUSES)}</select></div>
+      <div><label for="sRem">Remark (required for Rejected)</label><input id="sRem" maxlength="500"></div>
+    </div>
+    <p><button class="btn" onclick="setStatus(${id})">Update status</button> <button class="btn sec" onclick="App.closeModal()">Close</button></p>`);
+  $('aPri').value = c.priority; $('sSel').value = c.status;
+  $('aDept').onchange = () => loadOfficers(c.officerId);
+  loadOfficers(c.officerId);
+}
+async function loadOfficers(selected) {
+  const list = await App.api('/api/admin/officers?departmentId=' + $('aDept').value);
+  $('aOff').innerHTML = '<option value="">— none —</option>' + list.map(o => `<option value="${o.id}" ${o.id === selected ? 'selected' : ''}>${App.esc(o.fullName)}</option>`).join('');
+}
+async function assign(id) {
+  try {
+    await App.api(`/api/admin/complaints/${id}/assign`, { method: 'PUT', json: { departmentId: +$('aDept').value, officerId: $('aOff').value ? +$('aOff').value : null, priority: $('aPri').value } });
+    App.toast('Assignment saved', 'ok'); App.closeModal(); loadComplaints();
+  } catch (e) { App.toast(e.message, 'err'); }
+}
+async function setStatus(id) {
+  try {
+    await App.api(`/api/admin/complaints/${id}/status`, { method: 'PUT', json: { status: $('sSel').value, remark: $('sRem').value } });
+    App.toast('Status updated', 'ok'); App.closeModal(); loadComplaints();
+  } catch (e) { App.toast(e.message, 'err'); }
+}
+
+/* ---------- users ---------- */
+async function loadUsers() {
+  const list = await App.api('/api/admin/users');
+  $('uBody').innerHTML = list.map(u => `<tr><td>${App.esc(u.fullName)}</td><td>${App.esc(u.email)}</td><td>${App.label(u.role)}</td><td>${App.esc(u.departmentName || '—')}</td>
+    <td>${App.fmt(u.createdAt)}</td><td>${u.enabled ? 'Active' : '<b style="color:var(--bad)">Disabled</b>'}</td>
+    <td><button class="btn small ${u.enabled ? 'danger' : ''}" onclick="toggleUser(${u.id},${!u.enabled})">${u.enabled ? 'Disable' : 'Enable'}</button></td></tr>`).join('');
+}
+async function toggleUser(id, value) {
+  try { await App.api(`/api/admin/users/${id}/enabled?value=${value}`, { method: 'PUT' }); loadUsers(); }
+  catch (e) { App.toast(e.message, 'err'); }
+}
+
+/* ---------- departments / officers ---------- */
+async function loadDepts() {
+  departments = await App.api('/api/departments');
+  $('dBody').innerHTML = departments.map(d => `<tr><td>${App.esc(d.name)}</td><td>${App.esc(d.description || '')}</td></tr>`).join('');
+  $('oDept').innerHTML = departments.map(d => `<option value="${d.id}">${App.esc(d.name)}</option>`).join('');
+}
+$('addDept').onclick = async () => {
+  try { await App.api('/api/admin/departments', { json: { name: $('dName').value, description: $('dDesc').value } }); $('dName').value = $('dDesc').value = ''; App.toast('Department added', 'ok'); loadDepts(); }
+  catch (e) { App.toast(e.message, 'err'); }
+};
+$('addOfficer').onclick = async () => {
+  try {
+    await App.api('/api/admin/officers', { json: { fullName: $('oName').value, email: $('oEmail').value, password: $('oPass').value, departmentId: +$('oDept').value } });
+    $('oName').value = $('oEmail').value = $('oPass').value = ''; App.toast('Officer account created', 'ok');
+  } catch (e) { App.toast(e.message, 'err'); }
+};
+</script>
+</body></html>

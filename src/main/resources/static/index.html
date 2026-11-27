@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart City Issue Reporting Platform</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header class="top"><h1>🏙️ Smart City Issue Reporting Platform</h1></header>
+<div class="auth-wrap">
+  <div class="card" id="loginCard">
+    <h2>Login</h2>
+    <label for="lEmail">Email</label><input id="lEmail" type="email" autocomplete="username">
+    <label for="lPass">Password</label><input id="lPass" type="password" autocomplete="current-password">
+    <p><button class="btn" id="loginBtn">Login</button></p>
+    <p class="muted">New citizen? <a href="#" id="toReg">Create an account</a></p>
+    <div class="hint"><b>Demo accounts</b> (created on first start)<br>
+      Admin: admin@smartcity.gov / Admin@123<br>Officer: officer@smartcity.gov / Officer@123</div>
+  </div>
+  <div class="card hidden" id="regCard">
+    <h2>Citizen Registration</h2>
+    <label for="rName">Full name</label><input id="rName">
+    <label for="rEmail">Email</label><input id="rEmail" type="email">
+    <label for="rPass">Password (min 8 characters)</label><input id="rPass" type="password" autocomplete="new-password">
+    <label for="rPhone">Phone (optional)</label><input id="rPhone">
+    <label for="rAddr">Address (optional)</label><input id="rAddr">
+    <p><button class="btn" id="regBtn">Register</button></p>
+    <p class="muted">Already registered? <a href="#" id="toLogin">Login</a></p>
+  </div>
+</div>
+<script src="/js/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+$('toReg').onclick = e => { e.preventDefault(); $('loginCard').classList.add('hidden'); $('regCard').classList.remove('hidden'); };
+$('toLogin').onclick = e => { e.preventDefault(); $('regCard').classList.add('hidden'); $('loginCard').classList.remove('hidden'); };
+const goHome = role => { location.href = role === 'ADMIN' ? '/admin.html' : role === 'OFFICER' ? '/officer.html' : '/citizen.html'; };
+App.api('/api/auth/me').then(u => goHome(u.role)).catch(() => {});
+$('loginBtn').onclick = async () => {
+  try { const u = await App.api('/api/auth/login', { json: { email: $('lEmail').value, password: $('lPass').value } }); goHome(u.role); }
+  catch (e) { App.toast(e.message, 'err'); }
+};
+$('lPass').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginBtn').click(); });
+$('regBtn').onclick = async () => {
+  try {
+    await App.api('/api/auth/register', { json: { fullName: $('rName').value, email: $('rEmail').value, password: $('rPass').value, phone: $('rPhone').value, address: $('rAddr').value } });
+    App.toast('Registration successful – please login', 'ok'); $('toLogin').click(); $('lEmail').value = $('rEmail').value;
+  } catch (e) { App.toast(e.message, 'err'); }
+};
+</script>
+</body></html>

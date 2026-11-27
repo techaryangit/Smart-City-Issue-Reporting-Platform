@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Citizen Portal – Smart City Issue Reporting</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<header class="top"><h1>🏙️ Citizen Portal</h1>
+  <div class="who"><span id="whoami"></span><button class="btn sec small" onclick="App.logout()">Logout</button></div></header>
+<nav class="tabs">
+  <button data-tab="report">Report an Issue</button>
+  <button data-tab="mine">My Complaints</button>
+  <button data-tab="track">Track by ID</button>
+  <button data-tab="notifs">Notifications <span id="nCount"></span></button>
+  <button data-tab="profile">Profile</button>
+</nav>
+<main>
+<!-- ============ REPORT ============ -->
+<section class="tab" id="report">
+  <div class="card">
+    <h2>Report a Civic Issue</h2>
+    <div class="grid2">
+      <div>
+        <label for="cTitle">Title</label><input id="cTitle" maxlength="150" placeholder="e.g. Deep pothole near market">
+        <label for="cCat">Category</label><select id="cCat"></select>
+        <label for="cDesc">Description</label><textarea id="cDesc" maxlength="3000" placeholder="Describe the problem in detail"></textarea>
+        <label for="cImg">Photograph (JPG / PNG / WEBP, max 5 MB)</label><input id="cImg" type="file" accept="image/jpeg,image/png,image/webp">
+        <img id="preview" class="hidden" style="max-width:100%;max-height:180px;margin-top:8px;border-radius:8px" alt="preview">
+      </div>
+      <div>
+        <label>Location – click on the map to drop a pin</label>
+        <div id="pickMap" class="map"></div>
+        <p><button class="btn sec small" id="locBtn" type="button">📍 Use my current location</button></p>
+        <label for="cAddr">Address / landmark</label><input id="cAddr" maxlength="255" placeholder="Street, area, landmark">
+        <p class="muted" id="coords">No pin selected</p>
+      </div>
+    </div>
+    <p><button class="btn" id="submitBtn">Submit Complaint</button></p>
+    <div id="submitResult"></div>
+  </div>
+</section>
+
+<!-- ============ MY COMPLAINTS ============ -->
+<section class="tab hidden" id="mine">
+  <div class="card"><h2>My Complaints</h2>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>Title</th><th>Category</th><th>Status</th><th>Reported</th><th></th></tr></thead>
+    <tbody id="mineBody"></tbody></table></div>
+    <p class="muted hidden" id="mineEmpty">You have not reported any issues yet.</p>
+  </div>
+</section>
+
+<!-- ============ TRACK ============ -->
+<section class="tab hidden" id="track">
+  <div class="card"><h2>Track a Complaint</h2>
+    <div class="toolbar"><input id="trackId" placeholder="Enter complaint ID, e.g. CMP-2026-000001"><button class="btn" id="trackBtn" style="flex:0 0 auto">Track</button></div>
+    <div id="trackResult"></div>
+  </div>
+</section>
+
+<!-- ============ NOTIFICATIONS ============ -->
+<section class="tab hidden" id="notifs">
+  <div class="card"><h2>Notifications</h2>
+    <p><button class="btn sec small" id="readAllBtn">Mark all as read</button></p>
+    <div id="notifList"></div>
+  </div>
+</section>
+
+<!-- ============ PROFILE ============ -->
+<section class="tab hidden" id="profile">
+  <div class="grid2">
+    <div class="card"><h2>My Profile</h2>
+      <label for="pName">Full name</label><input id="pName">
+      <label for="pEmail">Email (cannot be changed)</label><input id="pEmail" disabled>
+      <label for="pPhone">Phone</label><input id="pPhone">
+      <label for="pAddr">Address</label><input id="pAddr">
+      <p><button class="btn" id="saveProfile">Save</button></p></div>
+    <div class="card"><h2>Change Password</h2>
+      <label for="pwOld">Current password</label><input id="pwOld" type="password">
+      <label for="pwNew">New password (min 8 characters)</label><input id="pwNew" type="password">
+      <p><button class="btn" id="savePw">Update password</button></p></div>
+  </div>
+</section>
+</main>
+
+<div class="modal-bg" id="modal" onclick="if(event.target===this)App.closeModal()"><div class="modal"></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let pickMap, marker, lat = null, lng = null;
+const DEFAULT_CENTER = [28.4744, 77.5040]; // Greater Noida – change for your city
+
+(async () => {
+  const me = await App.requireRole('CITIZEN'); if (!me) return;
+  $('cCat').innerHTML = App.options(App.CATEGORIES);
+  $('pName').value = me.fullName; $('pEmail').value = me.email; $('pPhone').value = me.phone || ''; $('pAddr').value = me.address || '';
+  App.tabs('report', id => {
+    if (id === 'report') setTimeout(initMap, 50);
+    if (id === 'mine') loadMine();
+    if (id === 'notifs') loadNotifs();
+  });
+  loadNotifCount();
+})();
+
+function initMap() {
+  if (pickMap) { pickMap.invalidateSize(); return; }
+  pickMap = L.map('pickMap').setView(DEFAULT_CENTER, 13);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(pickMap);
+  pickMap.on('click', e => setPin(e.latlng.lat, e.latlng.lng, true));
+}
+function setPin(a, b, geocode) {
+  lat = a; lng = b;
+  if (marker) marker.setLatLng([a, b]); else marker = L.marker([a, b]).addTo(pickMap);
+  $('coords').textContent = `Pin: ${a.toFixed(5)}, ${b.toFixed(5)}`;
+  if (geocode) reverseGeocode(a, b);
+}
+async function reverseGeocode(a, b) { // best-effort: needs internet, never blocks submission
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${a}&lon=${b}`);
+    const j = await r.json();
+    if (j.display_name && !$('cAddr').value.trim()) $('cAddr').value = j.display_name.slice(0, 250);
+  } catch (e) { /* ignore */ }
+}
+$('locBtn').onclick = () => {
+  if (!navigator.geolocation) return App.toast('Geolocation not supported', 'err');
+  navigator.geolocation.getCurrentPosition(p => { setPin(p.coords.latitude, p.coords.longitude, true); pickMap.setView([p.coords.latitude, p.coords.longitude], 16); },
+    () => App.toast('Could not get your location', 'err'));
+};
+$('cImg').onchange = () => {
+  const f = $('cImg').files[0], p = $('preview');
+  if (!f) return p.classList.add('hidden');
+  if (f.size > 5 * 1024 * 1024) { App.toast('Image is larger than 5 MB', 'err'); $('cImg').value = ''; return p.classList.add('hidden'); }
+  p.src = URL.createObjectURL(f); p.classList.remove('hidden');
+};
+
+$('submitBtn').onclick = async () => {
+  const fd = new FormData();
+  fd.append('title', $('cTitle').value); fd.append('category', $('cCat').value);
+  fd.append('description', $('cDesc').value); fd.append('address', $('cAddr').value);
+  if (lat !== null) { fd.append('latitude', lat); fd.append('longitude', lng); }
+  if ($('cImg').files[0]) fd.append('image', $('cImg').files[0]);
+  $('submitBtn').disabled = true;
+  try {
+    const c = await App.api('/api/complaints', { method: 'POST', body: fd });
+    $('submitResult').innerHTML = `<div class="hint" style="background:#e8f6ec;border-color:#9fd5b0">✅ Complaint registered. Your tracking ID is <b>${App.esc(c.complaintCode)}</b>. Keep it to track progress.</div>`;
+    $('cTitle').value = ''; $('cDesc').value = ''; $('cAddr').value = ''; $('cImg').value = ''; $('preview').classList.add('hidden');
+    if (marker) { pickMap.removeLayer(marker); marker = null; lat = lng = null; $('coords').textContent = 'No pin selected'; }
+    loadNotifCount();
+  } catch (e) { App.toast(e.message, 'err'); }
+  $('submitBtn').disabled = false;
+};
+
+async function loadMine() {
+  const list = await App.api('/api/complaints/mine');
+  $('mineEmpty').classList.toggle('hidden', list.length > 0);
+  $('mineBody').innerHTML = list.map(c => `<tr><td>${App.esc(c.complaintCode)}</td><td>${App.esc(c.title)}</td><td>${App.label(c.category)}</td>
+    <td>${App.badge(c.status)}</td><td>${App.fmt(c.createdAt)}</td><td><button class="btn small" onclick="openDetail('${c.complaintCode}')">View</button></td></tr>`).join('');
+}
+async function openDetail(code) {
+  try { App.openModal(App.detailHtml(await App.api('/api/complaints/' + encodeURIComponent(code))) + '<p><button class="btn sec" onclick="App.closeModal()">Close</button></p>'); }
+  catch (e) { App.toast(e.message, 'err'); }
+}
+$('trackBtn').onclick = async () => {
+  const code = $('trackId').value.trim(); if (!code) return;
+  try { $('trackResult').innerHTML = App.detailHtml(await App.api('/api/complaints/' + encodeURIComponent(code))); }
+  catch (e) { $('trackResult').innerHTML = `<p style="color:var(--bad)">${App.esc(e.message)}</p>`; }
+};
+
+async function loadNotifs() {
+  const list = await App.api('/api/notifications');
+  $('notifList').innerHTML = list.length ? list.map(n => `<div class="notif ${n.read ? '' : 'unread'}">${App.esc(n.message)}<br><small class="muted">${App.fmt(n.createdAt)}</small></div>`).join('') : '<p class="muted">No notifications.</p>';
+  loadNotifCount();
+}
+async function loadNotifCount() {
+  const list = await App.api('/api/notifications'); const n = list.filter(x => !x.read).length;
+  $('nCount').textContent = n ? `(${n})` : '';
+}
+$('readAllBtn').onclick = async () => { await App.api('/api/notifications/read-all', { method: 'POST' }); loadNotifs(); };
+
+$('saveProfile').onclick = async () => {
+  try { await App.api('/api/profile', { method: 'PUT', json: { fullName: $('pName').value, phone: $('pPhone').value, address: $('pAddr').value } }); App.toast('Profile saved', 'ok'); }
+  catch (e) { App.toast(e.message, 'err'); }
+};
+$('savePw').onclick = async () => {
+  try { await App.api('/api/profile/password', { method: 'PUT', json: { currentPassword: $('pwOld').value, newPassword: $('pwNew').value } }); App.toast('Password updated', 'ok'); $('pwOld').value = $('pwNew').value = ''; }
+  catch (e) { App.toast(e.message, 'err'); }
+};
+</script>
+</body></html>
